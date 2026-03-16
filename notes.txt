@@ -1,0 +1,23 @@
+ajouter des menus administratifs complets sur le côté 
+améliorer le design interactif de ces villes avec du WebGL / une vue isométrique en 3D à termes
+
+ameliore moi l'interface fais des plus grands continents rajoute les ressources et je ne peux rien faire sur la carte, 
+rajoute tout ce que tu as dit dans ton message aussi juste avant
+
+decord moi les differents cases (desert montagne plaine, rivieres, foret, toundra, etc)
+
+contients plus grand
+
+integrer les merveilles
+
+
+je souhaite a termes pouvoir jouer en multijoueur avec mes amis en ligne heberger donc sur mon pc 
+avoir plusieurs images pour le meme type de terrain
+auto = pour tous les tours jusqu'a annulation de l'odre ou blocage
+
+pour pas perdre trop de sonso de modele generer les images de tuiles en externes les stocker dans le repertoire 
+
+
+idées d'ameliorations quand tout marchera
+plus grand arbre de science
+meilleur IA des joueuers
