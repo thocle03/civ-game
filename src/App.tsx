@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { initializeGame, endTurn, moveUnit, foundCity, setResearch, enqueueProduction, improveTile, autoExplore, autoImprove } from './game/GameCore';
 import { TECH_DEFS } from './game/DataDefs';
 import type { GameState, Unit, TechType } from './game/GameTypes';
@@ -21,7 +21,7 @@ export default function App() {
 
   // Center camera on a specific hex
   const centerOn = useCallback((q: number, r: number) => {
-    const HEX_SIZE = 36;
+    const HEX_SIZE = 50;
     const HEX_W = Math.sqrt(3) * HEX_SIZE;
     const HEX_H = 2 * HEX_SIZE;
     const px = HEX_W * (q + r / 2);
@@ -61,46 +61,98 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedUnitId, gameState]);
 
-  const showNotif = (msg: string) => {
+  const showNotif = useCallback((msg: string) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 3000);
-  };
+  }, []);
 
   const handleTileClick = useCallback((q: number, r: number) => {
     if (!gameState) return;
     const tileKey = `${q},${r}`;
     const currentPlayer = gameState.players[gameState.currentPlayerIndex];
-    const isPlayerTurn = !currentPlayer?.isAI;
+    if (!currentPlayer) return;
+    const isPlayerTurn = !currentPlayer.isAI;
 
-    // If a unit is selected and we click a DIFFERENT adjacent tile → move/attack
+    // 1. Prioritize Selection/Cycling if clicking a hex with our own unit(s)
+    const myUnitsOnTile = Object.values(gameState.units).filter(
+      (u: Unit) => u.q === q && u.r === r && u.ownerId === currentPlayer.id
+    );
+
+    if (myUnitsOnTile.length > 0) {
+      // If our current selection is already on this tile, and we have multiple units, cycle
+      if (selectedUnitId && myUnitsOnTile.some(u => u.id === selectedUnitId)) {
+        if (myUnitsOnTile.length > 1) {
+          const currIdx = myUnitsOnTile.findIndex(u => u.id === selectedUnitId);
+          const nextIdx = (currIdx + 1) % myUnitsOnTile.length;
+          setSelectedUnitId(myUnitsOnTile[nextIdx].id);
+          setSelectedTileKey(tileKey);
+          setSelectedCityId(null);
+          return;
+        }
+        // If only 1 unit and already selected, don't return so we can check for city selection underneath
+      } else {
+        // Just select the first unit and exit
+        setSelectedUnitId(myUnitsOnTile[0].id);
+        setSelectedTileKey(tileKey);
+        setSelectedCityId(null);
+        return;
+      }
+    }
+
+    // 2. Movement logic: if a unit is currently selected, try to move it to the clicked hex
     if (selectedUnitId && isPlayerTurn) {
       const unit = gameState.units[selectedUnitId];
-      if (unit && unit.ownerId === currentPlayer.id && unit.movement > 0) {
+      if (unit && unit.ownerId === currentPlayer.id && !unit.actionsDone) {
         const dist = hexDistance({ q: unit.q, r: unit.r, s: -unit.q - unit.r }, { q, r, s: -q - r });
-        if (dist > 0 && dist <= unit.movement) {
-          setGameState(prev => prev ? moveUnit(prev, selectedUnitId, q, r) : null);
-          return;
+        if (dist > 0) {
+          if (dist <= unit.movement) {
+            setGameState(prev => {
+              if (!prev) return null;
+              const next = moveUnit(prev, selectedUnitId, q, r);
+              if (next === prev) {
+                showNotif("🚫 Invalid move (blocked or illegal)");
+              }
+              return next;
+            });
+            return;
+          } else {
+            showNotif("⚠️ Too far for this turn!");
+            return;
+          }
         }
       }
     }
 
-    // Select tile
+    // 3. Selection fallthrough: check for Cities/Enemies on the tile
     setSelectedTileKey(tileKey);
-
-    // Click on unit
-    const unitOnTile = Object.values(gameState.units).find((u: Unit) => u.q === q && u.r === r);
-    if (unitOnTile && unitOnTile.ownerId === currentPlayer.id) {
-      setSelectedUnitId(unitOnTile.id);
-    } else {
-      setSelectedUnitId(null);
-    }
-
-    // If city tile and player's city, offer to open
     const city = Object.values(gameState.cities).find(c => c.q === q && c.r === r);
     if (city && city.ownerId === currentPlayer.id) {
       setSelectedCityId(city.id);
+      setSelectedUnitId(null);
+    } else {
+      setSelectedCityId(null);
+      // Only deselect unit if we clicked an empty tile or enemy
+      const enemyOnTile = Object.values(gameState.units).find(u => u.q === q && u.r === r && u.ownerId !== currentPlayer.id);
+      if (!city || enemyOnTile) {
+        setSelectedUnitId(null);
+      }
     }
+  }, [selectedUnitId, gameState, setSelectedUnitId, setSelectedCityId, setSelectedTileKey, showNotif]);
+
+  const selectedUnit = useMemo(() => {
+    if (!selectedUnitId || !gameState) return null;
+    return gameState.units[selectedUnitId] || null;
   }, [selectedUnitId, gameState]);
+
+  const selectedCity = useMemo(() => {
+    if (!selectedCityId || !gameState) return null;
+    return gameState.cities[selectedCityId] || null;
+  }, [selectedCityId, gameState]);
+
+  const selectedTile = useMemo(() => {
+    if (!selectedTileKey || !gameState) return null;
+    return gameState.tiles[selectedTileKey] || null;
+  }, [selectedTileKey, gameState]);
 
   if (!gameState) return <div className="loading">🌍 Generating World...</div>;
 
@@ -176,20 +228,24 @@ export default function App() {
   const handleFoundCity = () => {
     if (selectedUnitId && gameState.units[selectedUnitId]?.type === 'SETTLER') {
       const unit = gameState.units[selectedUnitId];
-      const q = unit.q, r = unit.r;
+      // Check distance for feedback
+      const tooClose = Object.values(gameState.cities).find(c => {
+        const dist = hexDistance({ q: c.q, r: c.r, s: -c.q - c.r }, { q: unit.q, r: unit.r, s: -unit.q - unit.r });
+        return dist < 4;
+      });
+      if (tooClose) {
+        showNotif(`🚫 Too close to ${tooClose.name} (min 4 hexes)`);
+        return;
+      }
 
+      const newCityId = `city_0_${Date.now()}`;
       setGameState(prev => {
         if (!prev) return null;
-        const next = foundCity(prev, selectedUnitId);
-        // Find the newly created city at this location
-        const newCity = Object.values(next.cities).find(c => c.q === q && c.r === r);
-        if (newCity) {
-          setSelectedCityId(newCity.id);
-        }
-        return next;
+        return foundCity(prev, selectedUnitId, newCityId);
       });
 
       setSelectedUnitId(null);
+      setSelectedCityId(newCityId); // Set immediately
       showNotif('🏙️ City founded! Choose your first production.');
     }
   };
@@ -212,10 +268,6 @@ export default function App() {
       showNotif(`🔨 Building ${imp}...`);
     }
   };
-
-  const selectedUnit = selectedUnitId ? gameState.units[selectedUnitId] : null;
-  const selectedCity = selectedCityId ? gameState.cities[selectedCityId] : null;
-  const selectedTile = selectedTileKey ? gameState.tiles[selectedTileKey] : null;
 
   const scienceText = currentPlayer.science.researching
     ? `${currentPlayer.science.researching?.replace('_', ' ')} (${currentPlayer.science.progress}/${currentPlayer.science.researching ? 35 : '?'})`
@@ -346,6 +398,20 @@ export default function App() {
                   }} disabled={selectedUnit.movement <= 0}>
                     {selectedUnit.automation ? '🛑 Stop Auto' : '🧭 Auto (E)'}
                   </button>
+                  <button className="action-btn" onClick={() => {
+                    setGameState(prev => {
+                      if (!prev || !selectedUnitId) return prev;
+                      const u = prev.units[selectedUnitId];
+                      return {
+                        ...prev,
+                        units: {
+                          ...prev.units,
+                          [selectedUnitId]: { ...u, movement: 0, actionsDone: true }
+                        }
+                      };
+                    });
+                    showNotif("⌛ Unit action skipped");
+                  }} disabled={selectedUnit.movement <= 0}>⌛ Skip</button>
                   <button className="action-btn" onClick={() => setSelectedUnitId(null)}>Deselect</button>
                 </div>
               )}

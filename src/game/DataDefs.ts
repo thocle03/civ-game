@@ -41,3 +41,12 @@ export const WONDER_DEFS: Record<WonderType, { cost: number; effect: string; pre
 };
 
 export type ProductionItemDef = { type: 'UNIT', id: UnitType } | { type: 'BUILDING', id: BuildingType } | { type: 'WONDER', id: WonderType };
+
+export const CITY_NAMES: Record<string, string[]> = {
+    Rome: ['Rome', 'Antium', 'Cumae', 'Neapolis', 'Ravenna', 'Arretium', 'Mediolanum', 'Arpinum', 'Setia', 'Velitrae'],
+    Egypt: ['Thebes', 'Memphis', 'Heliopolis', 'Elephantine', 'Alexandria', 'Pi-Ramesses', 'Giza', 'Byblos', 'Akhetaten', 'Abydos'],
+    China: ["Xi'an", 'Beijing', 'Shanghai', 'Nanjing', 'Luoyang', 'Chengdu', 'Hangzhou', 'Guangzhou', 'Suzhou', 'Kaifeng'],
+    Greece: ['Athens', 'Sparta', 'Corinth', 'Argos', 'Knossos', 'Mycenae', 'Pharsalos', 'Ephesus', 'Halicarnassus', 'Rhodes'],
+    India: ['Delhi', 'Mumbai', 'Bangalore', 'Kolkata', 'Madras', 'Hyderabad', 'Varanasi', 'Agra', 'Patna', 'Ahmedabad'],
+    Aztec: ['Tenochtitlan', 'Tlatelolco', 'Texcoco', 'Tlaxcala', 'Calixtlahuaca', 'Xochicalco', 'Tlacopan', 'Atzcapotzalco', 'Tzintzuntzan', 'Malinalco'],
+};

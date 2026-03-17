@@ -1,5 +1,5 @@
 import React, { useRef, useState, useCallback, useMemo, useEffect } from 'react';
-import type { GameState, TileData, TerrainType, FeatureType, ResourceType } from '../game/GameTypes';
+import type { GameState, TileData, TerrainType, FeatureType, ResourceType, City } from '../game/GameTypes';
 import { getBaseTileYields } from '../game/YieldLogic';
 import { Apple, Zap, Coins, Settings, FlaskConical, Hammer, Smile, DollarSign, Feather, ChevronRight, AlertCircle, Trash2 } from 'lucide-react';
 
@@ -24,7 +24,6 @@ function hexToPixel(q: number, r: number) {
     };
 }
 
-// ASSET PATHS - Strictly top-down "floor" textures
 const ASSETS = {
     GRASSLAND: '/assets/terrain/grassland.png',
     DESERT: '/assets/terrain/desert.png',
@@ -100,7 +99,7 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
     };
 
     const handleTileClick = (q: number, r: number) => {
-        if (dragRef.current.movedPx > 10) return;
+        if (dragRef.current.movedPx > 25) return;
         onTileClick(q, r);
     };
 
@@ -110,8 +109,9 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
         if (!currentPlayer) return new Set<string>();
         const s = new Set<string>();
         Object.values(state.units).filter(u => u.ownerId === currentPlayer.id).forEach(u => {
-            for (let dq = -3; dq <= 3; dq++) {
-                for (let dr = Math.max(-3, -dq - 3); dr <= Math.min(3, -dq + 3); dr++) {
+            const vision = u.type === 'SCOUT' ? 3 : 2;
+            for (let dq = -vision; dq <= vision; dq++) {
+                for (let dr = Math.max(-vision, -dq - vision); dr <= Math.min(vision, -dq + vision); dr++) {
                     s.add(`${u.q + dq},${u.r + dr}`);
                 }
             }
@@ -125,6 +125,10 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
         });
         return s;
     }, [state.units, state.cities, currentPlayer?.id]);
+
+    const revealed = useMemo(() => {
+        return new Set(currentPlayer?.revealedTiles || []);
+    }, [currentPlayer?.revealedTiles]);
 
     if (!currentPlayer) return null;
 
@@ -146,23 +150,19 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
                         <feDropShadow dx="0" dy="4" stdDeviation="3" floodOpacity="0.8" />
                     </filter>
 
-                    <filter id="tile-rim">
-                        <feDropShadow dx="0" dy="0" stdDeviation="0.8" floodOpacity="0.4" />
-                    </filter>
-
-                    <filter id="rock-texture" x="-20%" y="-20%" width="140%" height="140%">
-                        <feTurbulence type="fractalNoise" baseFrequency="0.08" numOctaves="5" seed="88" result="noise" />
-                        <feDiffuseLighting in="noise" lightingColor="#eee" surfaceScale="3" result="diffuse">
-                            <feDistantLight azimuth="45" elevation="50" />
-                        </feDiffuseLighting>
-                        <feColorMatrix type="matrix" values="0.7 0 0 0 0.1 0 0.7 0 0 0.1 0 0 0.7 0 0.1 0 0 0 1 0" />
+                    <filter id="fog-filter">
+                        <feColorMatrix type="matrix" values="0.33 0.33 0.33 0 0 0.33 0.33 0.33 0 0 0.33 0.33 0.33 0 0 0 0 0 1 0" />
+                        <feComponentTransfer>
+                            <feFuncR type="linear" slope="0.5" />
+                            <feFuncG type="linear" slope="0.5" />
+                            <feFuncB type="linear" slope="0.5" />
+                        </feComponentTransfer>
                     </filter>
 
                     <style>{`
                         @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
                         .unit-anim { animation: pulse 2s infinite ease-in-out; }
-                        .tile-g:hover { filter: contrast(1.1) brightness(1.1); }
-                        .fog { fill: #000; fill-opacity: 0.85; }
+                        .tile-g:hover { filter: contrast(1.2) brightness(1.2); }
                     `}</style>
                 </defs>
 
@@ -174,58 +174,65 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
                         const isMovable = movementHighlights.includes(key);
                         const city = Object.values(state.cities).find(c => c.q === tile.q && c.r === tile.r);
                         const yields = getBaseTileYields(tile.terrain, tile.feature, tile.resource, tile.improvement);
-                        const isVisible = sighted.has(key);
+                        const isSighted = sighted.has(key);
+                        const isRevealed = revealed.has(key);
                         const assetUrl = ASSETS[tile.terrain] || ASSETS.GRASSLAND;
 
+                        if (!isRevealed && !isSighted) return null;
+
                         return (
-                            <g key={key} transform={`translate(${x},${y})`} onClick={() => handleTileClick(tile.q, tile.r)} style={{ cursor: 'pointer' }} className="tile-g">
-                                {isVisible ? (
-                                    <>
-                                        <polygon
-                                            points={hexPoints(0, 0, HEX_SIZE)}
-                                            fill="#1a1a1a"
-                                        />
-                                        <image
-                                            href={assetUrl}
-                                            x={-HEX_SIZE} y={-HEX_SIZE}
-                                            width={HEX_SIZE * 2} height={HEX_SIZE * 2}
-                                            clipPath="url(#hex-clip)"
-                                            preserveAspectRatio="xMidYMid slice"
-                                        />
-                                        <polygon
-                                            points={hexPoints(0, 0, HEX_SIZE)}
-                                            fill="none"
-                                            stroke={tile.borderOwnerId !== null ? state.players[tile.borderOwnerId]?.color : isSelected ? '#fff' : isMovable ? '#8ae26e' : 'rgba(255,255,255,0.05)'}
-                                            strokeWidth={tile.borderOwnerId !== null ? 4 : isSelected ? 3 : isMovable ? 2 : 1}
-                                        />
-                                        {tile.borderOwnerId !== null && (
-                                            <polygon points={hexPoints(0, 0, HEX_SIZE - 4)} fill={state.players[tile.borderOwnerId]?.color} fillOpacity={0.15} pointerEvents="none" />
-                                        )}
-                                        <TerrainDecorations tile={tile} />
-                                        {tile.resource && !city && (
-                                            <text y={15} fontSize={28} textAnchor="middle" filter="url(#unit-shadow)">{RESOURCE_ICONS[tile.resource]}</text>
-                                        )}
-                                        {!city && (
-                                            <g transform="translate(0, -18)">
-                                                {Array.from({ length: yields.food }).map((_, i) => <circle key={i} cx={-15 + i * 10} cy={-10} r={5} fill="#2ecc71" stroke="#000" strokeWidth={1} />)}
-                                                {Array.from({ length: yields.production }).map((_, i) => <rect key={i} x={-17 + i * 10} y={2} width={8} height={8} fill="#f39c12" stroke="#000" strokeWidth={1} />)}
-                                            </g>
-                                        )}
-                                        {city && (
-                                            <g filter="url(#unit-shadow)">
-                                                <rect x={-24} y={-24} width={48} height={42} rx={6} fill={state.players[city.ownerId]?.color || '#ccc'} stroke="#fff" strokeWidth={2.5} />
-                                                <text y={4} fontSize={20} fill="white" textAnchor="middle" fontWeight="bold">{city.population}</text>
-                                                <text y={42} fontSize={14} fill="white" textAnchor="middle" stroke={state.players[city.ownerId]?.color} strokeWidth={4} paintOrder="stroke" fontWeight="900">{city.name.toUpperCase()}</text>
-                                                {city.ownerId === state.currentPlayerIndex && city.productionQueue.length === 0 && (
-                                                    <circle cx={28} cy={-28} r={12} fill="#e74c3c" stroke="#fff" strokeWidth={2.5} className="unit-anim" />
-                                                )}
-                                            </g>
-                                        )}
-                                    </>
-                                ) : (
-                                    <polygon points={hexPoints(0, 0, HEX_SIZE)} className="fog" />
+                            <g key={key} transform={`translate(${x},${y})`}
+                                onClick={() => handleTileClick(tile.q, tile.r)}
+                                style={{ cursor: 'pointer' }}
+                                className="tile-g"
+                                filter={!isSighted ? "url(#fog-filter)" : ""}>
+
+                                <polygon
+                                    points={hexPoints(0, 0, HEX_SIZE)}
+                                    fill="#1a1a1a"
+                                />
+                                <image
+                                    href={assetUrl}
+                                    x={-HEX_SIZE} y={-HEX_SIZE}
+                                    width={HEX_SIZE * 2} height={HEX_SIZE * 2}
+                                    clipPath="url(#hex-clip)"
+                                    preserveAspectRatio="xMidYMid slice"
+                                />
+
+                                <polygon
+                                    points={hexPoints(0, 0, HEX_SIZE)}
+                                    fill="none"
+                                    stroke={tile.borderOwnerId !== null ? state.players[tile.borderOwnerId]?.color : isSelected ? '#fff' : isMovable ? '#8ae26e' : 'rgba(255,255,255,0.05)'}
+                                    strokeWidth={tile.borderOwnerId !== null ? 4 : isSelected ? 3 : isMovable ? 2 : 1}
+                                />
+
+                                {tile.borderOwnerId !== null && (
+                                    <polygon points={hexPoints(0, 0, HEX_SIZE - 4)} fill={state.players[tile.borderOwnerId]?.color} fillOpacity={0.15} pointerEvents="none" />
                                 )}
-                                {isVisible && isSelected && <polygon points={hexPoints(0, 0, HEX_SIZE)} fill="none" stroke="#fff" strokeWidth={5} opacity={0.7} filter="drop-shadow(0 0 10px white)" />}
+
+                                <TerrainDecorations tile={tile} />
+
+                                {tile.resource && !city && (
+                                    <text y={15} fontSize={28} textAnchor="middle" filter="url(#unit-shadow)">{RESOURCE_ICONS[tile.resource]}</text>
+                                )}
+
+                                {isSighted && !city && (
+                                    <g transform="translate(0, -18)">
+                                        {Array.from({ length: yields.food }).map((_, i) => <circle key={i} cx={-15 + i * 10} cy={-10} r={5} fill="#2ecc71" stroke="#000" strokeWidth={1} />)}
+                                        {Array.from({ length: yields.production }).map((_, i) => <rect key={i} x={-17 + i * 10} y={2} width={8} height={8} fill="#f39c12" stroke="#000" strokeWidth={1} />)}
+                                    </g>
+                                )}
+
+                                {city && (
+                                    <g filter="url(#unit-shadow)">
+                                        <rect x={-24} y={-24} width={48} height={42} rx={6} fill={state.players[city.ownerId]?.color || '#ccc'} stroke="#fff" strokeWidth={2.5} />
+                                        <text y={4} fontSize={20} fill="white" textAnchor="middle" fontWeight="bold">{city.population}</text>
+                                        <text y={42} fontSize={14} fill="white" textAnchor="middle" stroke={state.players[city.ownerId]?.color} strokeWidth={4} paintOrder="stroke" fontWeight="900" style={{ textTransform: 'uppercase' }}>{city.name}</text>
+                                        {city.ownerId === state.currentPlayerIndex && city.productionQueue.length === 0 && (
+                                            <circle cx={28} cy={-28} r={12} fill="#e74c3c" stroke="#fff" strokeWidth={2.5} className="unit-anim" />
+                                        )}
+                                    </g>
+                                )}
                             </g>
                         );
                     })}
@@ -234,17 +241,17 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
                         const { x, y } = hexToPixel(unit.q, unit.r);
                         const isSelected = selectedUnitId === unit.id;
                         const player = state.players[unit.ownerId];
-                        const isVisible = sighted.has(`${unit.q},${unit.r}`);
+                        const isSighted = sighted.has(`${unit.q},${unit.r}`);
 
-                        if (!isVisible && unit.ownerId !== currentPlayer.id) return null;
+                        if (!isSighted && unit.ownerId !== currentPlayer.id) return null;
 
                         return (
-                            <g key={unit.id} transform={`translate(${x},${y})`} style={{ pointerEvents: 'none' }} className={isSelected ? 'unit-anim' : ''}>
+                            <g key={unit.id} transform={`translate(${x},${y})`} style={{ pointerEvents: 'none' }} className={isSelected ? 'unit-anim' : ''} filter={!isSighted ? "grayscale(1) opacity(0.5)" : ""}>
                                 <circle r={HEX_SIZE * 0.65} fill={player?.color || '#fff'} stroke={isSelected ? '#fff' : 'rgba(255,255,255,0.5)'} strokeWidth={isSelected ? 5 : 2} filter="url(#unit-shadow)" />
                                 <text y={12} fontSize={36} textAnchor="middle" style={{ filter: 'drop-shadow(0 3px 3px black)' }}>
                                     {UNIT_ICONS[unit.type] || '?'}
                                 </text>
-                                {unit.actionsDone && <circle r={HEX_SIZE * 0.65} fill="rgba(0,0,0,0.6)" />}
+                                {unit.actionsDone && <circle r={HEX_SIZE * 0.65} fill="rgba(0,0,0,0.4)" />}
                             </g>
                         );
                     })}

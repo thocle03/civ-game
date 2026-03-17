@@ -37,6 +37,7 @@ export interface Unit {
     ownerId: PlayerId;
     q: number;
     r: number;
+    s: number;
     hp: number;
     maxHp: number;
     combat: number;
@@ -66,6 +67,8 @@ export interface City {
     buildings: BuildingType[];
     wonders: WonderType[];
     yields: Resources;
+    hp: number;
+    maxHp: number;
 }
 
 export interface TechState {
@@ -86,6 +89,7 @@ export interface Player {
     culture: number;
     happiness: number;
     era: string;
+    revealedTiles: string[]; // List of tile keys "q,r"
 }
 
 export interface GameState {

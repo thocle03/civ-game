@@ -4,7 +4,7 @@ améliorer le design interactif de ces villes avec du WebGL / une vue isométriq
 ameliore moi l'interface fais des plus grands continents rajoute les ressources et je ne peux rien faire sur la carte, 
 rajoute tout ce que tu as dit dans ton message aussi juste avant
 
-decord moi les differents cases (desert montagne plaine, rivieres, foret, toundra, etc)
+
 
 contients plus grand
 
@@ -21,3 +21,8 @@ pour pas perdre trop de sonso de modele generer les images de tuiles en externes
 idées d'ameliorations quand tout marchera
 plus grand arbre de science
 meilleur IA des joueuers
+
+
+git remote add origin https://github.com/thocle03/civ-game.git 
+PS C:\Users\admin\Documents\Antigravity\civ> git branch -M main
+PS C:\Users\admin\Documents\Antigravity\civ> git push -u origin main
