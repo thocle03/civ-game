@@ -396,11 +396,19 @@ body {
 }
 
 /* ─── NOTIFICATION TOAST ─────────────────────────── */
-.notif-toast {
+.notif-container {
   position: absolute;
   top: 70px;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.notif-toast {
   background: rgba(12, 20, 32, .95);
   border: 1px solid var(--gold-dim);
   border-radius: 8px;
@@ -411,20 +419,20 @@ body {
   align-items: center;
   gap: 8px;
   backdrop-filter: blur(10px);
-  z-index: 300;
   animation: toastIn .3s ease;
   box-shadow: 0 4px 20px rgba(0, 0, 0, .6);
+  pointer-events: auto;
 }
 
 @keyframes toastIn {
   from {
     opacity: 0;
-    transform: translate(-50%, -10px)
+    transform: translateY(-10px)
   }
 
   to {
     opacity: 1;
-    transform: translate(-50%, 0)
+    transform: translateY(0)
   }
 }
 

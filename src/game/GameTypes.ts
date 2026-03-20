@@ -1,3 +1,4 @@
+import type { CivKey } from './Civilizations';
 export type PlayerId = number;
 
 export type TerrainType = 'OCEAN' | 'COAST' | 'GRASSLAND' | 'PLAINS' | 'DESERT' | 'TUNDRA' | 'SNOW' | 'MOUNTAIN';
@@ -81,6 +82,7 @@ export interface Player {
     id: PlayerId;
     name: string;
     civilizationName: string;
+    civKey?: CivKey; // internal identifier for civ selection (set by initializeGame)
     isAI: boolean;
     color: string;
     globalYields: Resources;

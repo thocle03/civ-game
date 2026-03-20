@@ -11,6 +11,9 @@ interface MapRendererProps {
     movementHighlights: string[];
     offset: { x: number; y: number };
     onOffsetChange: (offset: { x: number; y: number }) => void;
+    // Optionnel : id du joueur dont on utilise la vision (multijoueur)
+    viewPlayerId?: number | null;
+    revealMode?: 'FOG' | 'ALL';
 }
 
 const HEX_SIZE = 50;
@@ -24,7 +27,7 @@ function hexToPixel(q: number, r: number) {
     };
 }
 
-const ASSETS = {
+const ASSETS: Record<TerrainType, string | string[]> = {
     GRASSLAND: '/assets/terrain/grassland.png',
     DESERT: '/assets/terrain/desert.png',
     OCEAN: '/assets/terrain/ocean.png',
@@ -32,8 +35,19 @@ const ASSETS = {
     TUNDRA: '/assets/terrain/mountain_snow.png',
     SNOW: '/assets/terrain/mountain_snow.png',
     COAST: '/assets/terrain/ocean.png',
-    MOUNTAIN: '/assets/terrain/mountain.png',
+    // Plusieurs variantes de montagne (mountain.png, mountain2.png, etc.)
+    MOUNTAIN: ['/assets/terrain/mountain.png', '/assets/terrain/mountain2.png'],
 };
+
+function pickTerrainAsset(terrain: TerrainType, q: number, r: number): string {
+    const entry = ASSETS[terrain] ?? ASSETS.GRASSLAND;
+    if (Array.isArray(entry)) {
+        // Hash simple et déterministe en fonction de la position
+        const idx = Math.abs(q * 31 + r * 17) % entry.length;
+        return entry[idx];
+    }
+    return entry;
+}
 
 const RESOURCE_ICONS: Record<ResourceType, string> = {
     WHEAT: '🌾', HORSES: '🐎', IRON: '⚙️', GOLD_ORE: '💛',
@@ -67,7 +81,17 @@ const TerrainDecorations: React.FC<{ tile: TileData }> = ({ tile }) => {
     return null;
 };
 
-export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, selectedUnitId, selectedTileKey, movementHighlights, offset, onOffsetChange }) => {
+export const MapRenderer: React.FC<MapRendererProps> = ({
+    state,
+    onTileClick,
+    selectedUnitId,
+    selectedTileKey,
+    movementHighlights,
+    offset,
+    onOffsetChange,
+    viewPlayerId,
+    revealMode,
+}) => {
     const [isDragging, setIsDragging] = useState(false);
     const dragRef = useRef({ startX: 0, startY: 0, movedPx: 0, originalX: 0, originalY: 0 });
 
@@ -103,9 +127,13 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
         onTileClick(q, r);
     };
 
-    const currentPlayer = state?.players?.[state?.currentPlayerIndex];
+    const currentPlayer = viewPlayerId !== undefined && viewPlayerId !== null
+        ? state.players[viewPlayerId]
+        : state?.players?.[state?.currentPlayerIndex];
+    const showAll = revealMode === 'ALL';
 
     const sighted = useMemo(() => {
+        if (showAll) return new Set<string>(Object.keys(state.tiles));
         if (!currentPlayer) return new Set<string>();
         const s = new Set<string>();
         Object.values(state.units).filter(u => u.ownerId === currentPlayer.id).forEach(u => {
@@ -127,6 +155,7 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
     }, [state.units, state.cities, currentPlayer?.id]);
 
     const revealed = useMemo(() => {
+        if (showAll) return new Set<string>(Object.keys(state.tiles));
         return new Set(currentPlayer?.revealedTiles || []);
     }, [currentPlayer?.revealedTiles]);
 
@@ -176,16 +205,17 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
                         const yields = getBaseTileYields(tile.terrain, tile.feature, tile.resource, tile.improvement);
                         const isSighted = sighted.has(key);
                         const isRevealed = revealed.has(key);
-                        const assetUrl = ASSETS[tile.terrain] || ASSETS.GRASSLAND;
+                        const assetUrl = pickTerrainAsset(tile.terrain, tile.q, tile.r);
 
-                        if (!isRevealed && !isSighted) return null;
+                        const isOwnedCityByViewPlayer = !!city && city.ownerId === currentPlayer.id;
+                        if (!showAll && !isRevealed && !isSighted && !isOwnedCityByViewPlayer) return null;
 
                         return (
                             <g key={key} transform={`translate(${x},${y})`}
                                 onClick={() => handleTileClick(tile.q, tile.r)}
                                 style={{ cursor: 'pointer' }}
                                 className="tile-g"
-                                filter={!isSighted ? "url(#fog-filter)" : ""}>
+                                filter={!showAll && !isSighted ? "url(#fog-filter)" : ""}>
 
                                 <polygon
                                     points={hexPoints(0, 0, HEX_SIZE)}
@@ -228,7 +258,7 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
                                         <rect x={-24} y={-24} width={48} height={42} rx={6} fill={state.players[city.ownerId]?.color || '#ccc'} stroke="#fff" strokeWidth={2.5} />
                                         <text y={4} fontSize={20} fill="white" textAnchor="middle" fontWeight="bold">{city.population}</text>
                                         <text y={42} fontSize={14} fill="white" textAnchor="middle" stroke={state.players[city.ownerId]?.color} strokeWidth={4} paintOrder="stroke" fontWeight="900" style={{ textTransform: 'uppercase' }}>{city.name}</text>
-                                        {city.ownerId === state.currentPlayerIndex && city.productionQueue.length === 0 && (
+                                        {city.ownerId === currentPlayer.id && city.productionQueue.length === 0 && (
                                             <circle cx={28} cy={-28} r={12} fill="#e74c3c" stroke="#fff" strokeWidth={2.5} className="unit-anim" />
                                         )}
                                     </g>
@@ -243,10 +273,15 @@ export const MapRenderer: React.FC<MapRendererProps> = ({ state, onTileClick, se
                         const player = state.players[unit.ownerId];
                         const isSighted = sighted.has(`${unit.q},${unit.r}`);
 
-                        if (!isSighted && unit.ownerId !== currentPlayer.id) return null;
+                        if (!showAll && !isSighted && unit.ownerId !== currentPlayer.id) return null;
 
                         return (
-                            <g key={unit.id} transform={`translate(${x},${y})`} style={{ pointerEvents: 'none' }} className={isSelected ? 'unit-anim' : ''} filter={!isSighted ? "grayscale(1) opacity(0.5)" : ""}>
+                            <g
+                                key={unit.id}
+                                transform={`translate(${x},${y})`}
+                                style={{ pointerEvents: 'none', opacity: !isSighted ? 0.55 : 1 }}
+                                className={isSelected ? 'unit-anim' : ''}
+                            >
                                 <circle r={HEX_SIZE * 0.65} fill={player?.color || '#fff'} stroke={isSelected ? '#fff' : 'rgba(255,255,255,0.5)'} strokeWidth={isSelected ? 5 : 2} filter="url(#unit-shadow)" />
                                 <text y={12} fontSize={36} textAnchor="middle" style={{ filter: 'drop-shadow(0 3px 3px black)' }}>
                                     {UNIT_ICONS[unit.type] || '?'}

@@ -2,17 +2,9 @@ import type { GameState, TechType, UnitType, BuildingType, PlayerId, TileData, U
 import { UNIT_DEFS, BUILDING_DEFS, TECH_DEFS, CITY_NAMES } from './DataDefs';
 import { generateMap } from './MapGenerator';
 import { getBaseTileYields } from './YieldLogic';
+import { CIV_DEFS, getCivDef, type CivKey } from './Civilizations';
 
-const CIVS = [
-    { name: 'Rome', color: '#e74c3c', civName: 'Roman Empire' },
-    { name: 'Egypt', color: '#f39c12', civName: 'Egyptian Empire' },
-    { name: 'China', color: '#2ecc71', civName: 'Chinese Empire' },
-    { name: 'Greece', color: '#3498db', civName: 'Greek Empire' },
-    { name: 'India', color: '#9b59b6', civName: 'Indian Empire' },
-    { name: 'Aztec', color: '#1abc9c', civName: 'Aztec Empire' },
-];
-
-export function initializeGame(numPlayers: number): GameState {
+export function initializeGame(numPlayers: number, civKeys?: CivKey[]): GameState {
     const tiles = generateMap();
     const players: GameState['players'] = {};
     const units: GameState['units'] = {};
@@ -22,14 +14,25 @@ export function initializeGame(numPlayers: number): GameState {
     const landKeys = keys.filter(k => !['OCEAN', 'COAST', 'MOUNTAIN'].includes(tiles[k].terrain));
 
     for (let i = 0; i < numPlayers; i++) {
-        const civ = CIVS[i % CIVS.length];
+        const civKey = civKeys?.[i] ?? CIV_DEFS[i % CIV_DEFS.length].key;
+        const civ = getCivDef(civKey);
+        const baseYields = { food: 0, production: 0, gold: 0, science: 5, culture: 2 };
+        const bonus = civ.startingGlobalYields;
+        const globalYields = {
+            food: baseYields.food + (bonus.food ?? 0),
+            production: baseYields.production + (bonus.production ?? 0),
+            gold: baseYields.gold + (bonus.gold ?? 0),
+            science: baseYields.science + (bonus.science ?? 0),
+            culture: baseYields.culture + (bonus.culture ?? 0),
+        };
         players[i] = {
             id: i,
-            name: i === 0 ? 'You' : civ.name,
-            civilizationName: civ.civName,
+            name: i === 0 ? 'You' : civ.playerName,
+            civilizationName: civ.civilizationName,
             isAI: i > 0,
+            civKey,
             color: civ.color,
-            globalYields: { food: 0, production: 0, gold: 0, science: 5, culture: 2 },
+            globalYields,
             science: { unlocked: [], researching: 'AGRICULTURE', progress: 0 },
             gold: 0, culture: 0, happiness: 10,
             era: 'Ancient',
@@ -58,8 +61,22 @@ export function initializeGame(numPlayers: number): GameState {
 
     let nextState = { turn: 1, currentPlayerIndex: 0, players, tiles, units, cities, mapRadius: 22 };
 
-    // Initial vision and yields for all players
-    for (let pId = 0; pId < numPlayers; pId++) {
+    // Barbarian player
+    players[-1] = {
+        id: -1,
+        name: 'Barbarians',
+        civilizationName: 'Barbarian Tribe',
+        isAI: true,
+        color: '#7f8c8d',
+        globalYields: { food: 0, production: 0, gold: 0, science: 0, culture: 0 },
+        science: { unlocked: [], researching: null, progress: 0 },
+        gold: 0, culture: 0, happiness: 0,
+        era: 'Ancient',
+        revealedTiles: [],
+    };
+
+    // Initial vision and yields for all players (including barbarians)
+    for (const pId of [-1, ...Object.keys(players).map(Number).filter(p => p !== -1)]) {
         nextState = updateRevealedTiles(nextState, pId);
         nextState = calculatePlayerYields(nextState, pId);
     }
@@ -96,16 +113,44 @@ export function updateRevealedTiles(state: GameState, playerId: number): GameSta
     };
 }
 
-export function calculateCityYields(state: GameState, cityId: string) {
+export function calculateCityYields(state: GameState, cityId: string): City {
     const city = state.cities[cityId];
-    const player = state.players[city.ownerId];
+    if (!city) throw new Error(`City ${cityId} not found`);
 
     // Start with base city square (free)
     const cityTile = state.tiles[`${city.q},${city.r}`];
     let yields = getBaseTileYields(cityTile.terrain, cityTile.feature, cityTile.resource, cityTile.improvement);
-    // Cities always have at least 2 food, 1 prod
+
+    // Base yields for ANY city (guarantees a floor)
     yields.food = Math.max(yields.food, 2);
     yields.production = Math.max(yields.production, 1);
+    yields.gold = Math.max(yields.gold, 1);
+    yields.science = (yields.science || 0) + 2;
+    yields.culture = (yields.culture || 0) + 1;
+
+    // Population logic: one citizen stays in city, others work the best tiles in borders
+    const borderTiles = Object.values(state.tiles).filter(t => t.borderOwnerId === city.ownerId && !(t.q === city.q && t.r === city.r));
+
+    // Calculate quality for each border tile
+    const sortedTiles = borderTiles.map(t => {
+        const ty = getBaseTileYields(t.terrain, t.feature, t.resource, t.improvement);
+        return {
+            t,
+            y: ty,
+            score: (ty.food * 2) + (ty.production * 1.5) + (ty.gold * 0.5) + (ty.science * 1) + (ty.culture * 1)
+        };
+    }).sort((a, b) => b.score - a.score);
+
+    // Take top (pop - 1) tiles. (Citizens work tiles up to population limit)
+    const workedCount = Math.min(city.population - 1, sortedTiles.length);
+    for (let i = 0; i < workedCount; i++) {
+        const ty = sortedTiles[i].y;
+        yields.food += ty.food;
+        yields.production += ty.production;
+        yields.gold += ty.gold;
+        yields.culture += ty.culture;
+        yields.science += ty.science;
+    }
 
     // Add building yields
     city.buildings.forEach(bId => {
@@ -117,51 +162,38 @@ export function calculateCityYields(state: GameState, cityId: string) {
         if (bDef.yields.culture) yields.culture += bDef.yields.culture;
     });
 
-    // Work tiles: find all tiles in city's borders
-    const ownedTiles = Object.values(state.tiles).filter(t => t.borderOwnerId === city.ownerId);
-    // Sort by total value (naive)
-    const scoredTiles = ownedTiles.map(t => ({
-        t,
-        score: getBaseTileYields(t.terrain, t.feature, t.resource, t.improvement).food * 2 +
-            getBaseTileYields(t.terrain, t.feature, t.resource, t.improvement).production * 2 +
-            getBaseTileYields(t.terrain, t.feature, t.resource, t.improvement).gold
-    })).sort((a, b) => b.score - a.score);
-
-    // Number of worked tiles = population
-    for (let i = 0; i < Math.min(city.population, scoredTiles.length); i++) {
-        const t = scoredTiles[i].t;
-        if (t.q === city.q && t.r === city.r) continue; // City square already added
-        const ty = getBaseTileYields(t.terrain, t.feature, t.resource, t.improvement);
-        yields.food += ty.food;
-        yields.production += ty.production;
-        yields.gold += ty.gold;
-        yields.science += ty.science;
-        yields.culture += ty.culture;
-    }
-
-    city.yields = yields;
+    return { ...city, yields };
 }
 
 export function calculatePlayerYields(state: GameState, playerId: number): GameState {
     const player = state.players[playerId];
-    const total = { food: 0, production: 0, gold: 0, science: 5, culture: 2 };
+    if (!player) return state;
+
+    const total = { food: 0, production: 0, gold: 0, science: 5, culture: 2 }; // base yields for civilization
+    const newCities = { ...state.cities };
 
     Object.keys(state.cities).forEach(cid => {
         if (state.cities[cid].ownerId === playerId) {
-            calculateCityYields(state, cid);
-            const cy = state.cities[cid].yields;
-            total.food += cy.food;
-            total.production += cy.production;
-            total.gold += cy.gold;
-            total.science += cy.science;
-            total.culture += cy.culture;
+            try {
+                const updatedCity = calculateCityYields(state, cid);
+                newCities[cid] = updatedCity;
+                const cy = updatedCity.yields;
+                total.food += cy.food;
+                total.production += cy.production;
+                total.gold += cy.gold;
+                total.science += cy.science;
+                total.culture += cy.culture;
+            } catch (e) {
+                console.error(e);
+            }
         }
     });
 
     const updatedPlayer = { ...player, globalYields: total };
     return {
         ...state,
-        players: { ...state.players, [playerId]: updatedPlayer }
+        players: { ...state.players, [playerId]: updatedPlayer },
+        cities: newCities,
     };
 }
 
@@ -201,6 +233,11 @@ export function endTurn(state: GameState): GameState {
         if (nextState.cities[cityId].ownerId !== pid) continue;
         const city = { ...nextState.cities[cityId] };
         nextState.cities[cityId] = city;
+
+        // City health regeneration
+        if (city.hp < city.maxHp) {
+            city.hp = Math.min(city.maxHp, city.hp + 5);
+        }
 
         // Food & growth
         city.food += city.yields.food;
@@ -247,43 +284,77 @@ export function endTurn(state: GameState): GameState {
     }
 
     // Border expansion - cities grow territory naturally based on culture
-    Object.values(nextState.cities).filter(c => c.ownerId === pid).forEach(city => {
-        const ownedByThisCity = Object.values(nextState.tiles).filter(t => t.borderOwnerId === pid); // Simplified
-        const borderCost = 10 + Math.floor(ownedByThisCity.length * 0.8);
-        if (player.culture >= borderCost) {
-            const candidates = new Set<string>();
-            ownedByThisCity.forEach(ot => {
-                const dirs = [[1, -1], [1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1]];
-                dirs.forEach(d => {
-                    const nk = `${ot.q + d[0]},${ot.r + d[1]}`;
-                    if (nextState.tiles[nk] && nextState.tiles[nk].borderOwnerId === null) candidates.add(nk);
-                });
+    const cultureNeeded = 10 + (Object.values(nextState.tiles).filter(t => t.borderOwnerId === pid).length * 2);
+    if (player.culture >= cultureNeeded) {
+        // Find best tiles to expand into
+        const expansionKeys = Object.keys(nextState.tiles).filter(k => {
+            const t = nextState.tiles[k];
+            if (t.borderOwnerId !== null) return false;
+            // Adjacent to current border
+            const dirs = [[1, -1], [1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1]];
+            return dirs.some(d => {
+                const adjKey = `${t.q + d[0]},${t.r + d[1]}`;
+                const adj = nextState.tiles[adjKey];
+                return adj && adj.borderOwnerId === pid;
             });
-            const candList = Array.from(candidates);
-            if (candList.length > 0) {
-                const pick = candList[Math.floor(Math.random() * candList.length)];
-                nextState.tiles[pick] = { ...nextState.tiles[pick], borderOwnerId: pid };
-                player.culture -= borderCost;
-            }
-        }
-    });
-
-    // Advance to next player
-    nextState.currentPlayerIndex = (pid + 1) % Object.keys(nextState.players).length;
-    if (nextState.currentPlayerIndex === 0) {
-        nextState.turn++;
-        // Reset all units
-        for (const uid of Object.keys(nextState.units)) {
-            const u = nextState.units[uid];
-            nextState.units[uid] = { ...u, movement: u.maxMovement, actionsDone: false, hasAttacked: false };
+        });
+        if (expansionKeys.length > 0) {
+            const k = expansionKeys[Math.floor(Math.random() * expansionKeys.length)];
+            nextState.tiles[k] = { ...nextState.tiles[k], borderOwnerId: pid };
+            player.culture -= cultureNeeded;
         }
     }
 
-    // Run AI or Automation
-    if (nextState.players[nextState.currentPlayerIndex].isAI) {
-        nextState = runAI(nextState, nextState.currentPlayerIndex);
-    } else {
-        nextState = runAutomation(nextState, nextState.currentPlayerIndex);
+    // ── NEXT PLAYER ──
+    const pIds = Object.keys(nextState.players).map(Number).sort((a, b) => a - b);
+    const currIdx = pIds.indexOf(pid);
+    const nextPid = pIds[(currIdx + 1) % pIds.length];
+
+    if (nextPid === 0) nextState.turn++;
+    nextState.currentPlayerIndex = nextPid;
+
+    // Reset movements for ALL units of NEW current player
+    for (const id in nextState.units) {
+        if (nextState.units[id].ownerId === nextPid) {
+            nextState.units[id] = { ...nextState.units[id], movement: nextState.units[id].maxMovement, actionsDone: false, hasAttacked: false };
+        }
+    }
+
+    // Run automation for the new current player (mainly useful for human turns)
+    nextState = runAutomation(nextState, nextPid);
+
+    // Run AI if it's AI turn (including Barbarians)
+    if (nextState.players[nextPid].isAI) {
+        nextState = runAI(nextState, nextPid);
+    }
+
+    // ── BARBARIAN SPAWNING (fog of war only) ──
+    if (nextPid === 0 && nextState.turn % 2 === 0) {
+        const playerSighted = updateRevealedTiles(nextState, 0).players[0].revealedTiles;
+        const sightedSet = new Set(playerSighted);
+
+        const spawnCandidates = Object.keys(nextState.tiles).filter(k => {
+            const t = nextState.tiles[k];
+            if (['OCEAN', 'MOUNTAIN', 'ICE'].includes(t.terrain) || t.hasCity || t.borderOwnerId !== null) return false;
+            // Far from player 0 vision
+            if (sightedSet.has(k)) return false;
+            // Far from cities
+            return Object.values(nextState.cities).every(c => {
+                const dist = Math.max(Math.abs(c.q - t.q), Math.abs(c.r - t.r), Math.abs(-(c.q - t.q) - (c.r - t.r)));
+                return dist > 5;
+            });
+        });
+
+        if (spawnCandidates.length > 0 && Math.random() < 0.3) {
+            const k = spawnCandidates[Math.floor(Math.random() * spawnCandidates.length)];
+            const t = nextState.tiles[k];
+            const bid = `barb_${Date.now()}_${Math.random()}`;
+            nextState.units[bid] = {
+                id: bid, type: 'WARRIOR', ownerId: -1, q: t.q, r: t.r, s: -t.q - t.r,
+                hp: 10, maxHp: 10, combat: UNIT_DEFS['WARRIOR'].combat,
+                movement: 2, maxMovement: 2, actionsDone: false, hasAttacked: false,
+            };
+        }
     }
 
     return nextState;
@@ -347,19 +418,41 @@ function runAI(state: GameState, pid: number): GameState {
 
         if (u.type === 'SETTLER') {
             const tooClose = Object.values(s.cities).some(c => {
-                const dist = Math.max(Math.abs(c.q - u.q), Math.abs(c.r - u.r), Math.abs(-(c.q - u.q) - (c.r - u.r)));
+                const dq = c.q - u.q, dr = c.r - u.r;
+                const dist = Math.max(Math.abs(dq), Math.abs(dr), Math.abs(-dq - dr));
                 return dist < 4;
             });
             const tile = s.tiles[`${u.q},${u.r}`];
             if (tile && !tile.hasCity && !tooClose && !['OCEAN', 'MOUNTAIN'].includes(tile.terrain)) {
                 s = foundCity(s, uid);
             } else {
-                s = autoExplore(s, uid);
+                // If too close, move away
+                if (tooClose) {
+                    const dirs = [[1, -1], [1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1]];
+                    const bestStep = dirs.map(dir => ({ q: u.q + dir[0], r: u.r + dir[1] }))
+                        .filter(c => s.tiles[`${c.q},${c.r}`] && !['OCEAN', 'MOUNTAIN', 'ICE'].includes(s.tiles[`${c.q},${c.r}`].terrain))
+                        .sort((a, b) => {
+                            // Maximize distance from nearest city
+                            const distFromCity = (pos: { q: number, r: number }) => Math.min(...Object.values(s.cities).map(c =>
+                                Math.max(Math.abs(c.q - pos.q), Math.abs(c.r - pos.r), Math.abs(-(c.q - pos.q) - (c.r - pos.r)))
+                            ));
+                            return distFromCity(b) - distFromCity(a);
+                        })[0];
+                    if (bestStep) s = moveUnit(s, uid, bestStep.q, bestStep.r);
+                    else s = autoExplore(s, uid);
+                } else {
+                    s = autoExplore(s, uid);
+                }
             }
         } else {
-            // Combat Unit
-            if (targets.length > 0) {
-                const target = targets.sort((a, b) => {
+            // Combat Unit / Barbarian
+            const enemyTargets = [
+                ...Object.values(s.units).filter(ent => ent.ownerId !== pid),
+                ...Object.values(s.cities).filter(enc => enc.ownerId !== pid)
+            ];
+
+            if (enemyTargets.length > 0) {
+                const target = enemyTargets.sort((a, b) => {
                     const d1 = Math.max(Math.abs(a.q - u.q), Math.abs(a.r - u.r), Math.abs(-(a.q - u.q) - (a.r - u.r)));
                     const d2 = Math.max(Math.abs(b.q - u.q), Math.abs(b.r - u.r), Math.abs(-(b.q - u.q) - (b.r - u.r)));
                     return d1 - d2;
@@ -398,9 +491,165 @@ export function enqueueProduction(state: GameState, cityId: string, itemType: 'U
     return { ...state, cities: { ...state.cities, [cityId]: city } };
 }
 
+const HEX_DIRS: ReadonlyArray<readonly [number, number]> = [[1, -1], [1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1]];
+
+function keyOf(q: number, r: number) {
+    return `${q},${r}`;
+}
+
+function hexDist(aq: number, ar: number, bq: number, br: number) {
+    const dq = bq - aq;
+    const dr = br - ar;
+    return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(-dq - dr));
+}
+
+function isPassableForUnit(tile: TileData | undefined, unit: Unit) {
+    if (!tile) return false;
+    if (tile.terrain === 'MOUNTAIN') return false;
+    if (tile.terrain === 'OCEAN') return false;
+    return true;
+}
+
+function moveCost(tile: TileData) {
+    // Very lightweight Civ-like costs (no roads yet)
+    // Base 1; rough terrain costs 2.
+    if (tile.feature === 'HILL') return 2;
+    if (tile.feature === 'FOREST') return 2;
+    if (tile.feature === 'JUNGLE') return 2;
+    if (tile.feature === 'MARSH') return 2;
+    if (tile.feature === 'RIVER') return 2;
+    return 1;
+}
+
+function findPathWithinMovement(state: GameState, unit: Unit, dstQ: number, dstR: number): { path: { q: number, r: number }[]; totalCost: number } | null {
+    const startKey = keyOf(unit.q, unit.r);
+    const goalKey = keyOf(dstQ, dstR);
+    if (startKey === goalKey) return { path: [], totalCost: 0 };
+
+    // Dijkstra (costs are 1/2). Keep it simple.
+    const frontier: { k: string; q: number; r: number; cost: number }[] = [{ k: startKey, q: unit.q, r: unit.r, cost: 0 }];
+    const bestCost = new Map<string, number>([[startKey, 0]]);
+    const cameFrom = new Map<string, string>();
+
+    const isBlockedByUnit = (q: number, r: number) => {
+        const occ = Object.values(state.units).find(u => u.q === q && u.r === r);
+        if (!occ) return false;
+        // Can't path through any unit; destination handling is done by caller.
+        return true;
+    };
+
+    while (frontier.length > 0) {
+        frontier.sort((a, b) => a.cost - b.cost);
+        const curr = frontier.shift()!;
+        if (curr.k === goalKey) break;
+
+        for (const [dq, dr] of HEX_DIRS) {
+            const nq = curr.q + dq;
+            const nr = curr.r + dr;
+            const nk = keyOf(nq, nr);
+            if (nk !== goalKey && isBlockedByUnit(nq, nr)) continue;
+
+            const tile = state.tiles[nk];
+            if (!isPassableForUnit(tile, unit)) continue;
+
+            const stepCost = moveCost(tile);
+            const nextCost = curr.cost + stepCost;
+            const prevBest = bestCost.get(nk);
+            if (prevBest !== undefined && nextCost >= prevBest) continue;
+            if (nextCost > unit.movement) continue;
+
+            bestCost.set(nk, nextCost);
+            cameFrom.set(nk, curr.k);
+            frontier.push({ k: nk, q: nq, r: nr, cost: nextCost });
+        }
+    }
+
+    if (!bestCost.has(goalKey)) return null;
+
+    const rev: string[] = [goalKey];
+    while (rev[rev.length - 1] !== startKey) {
+        const prev = cameFrom.get(rev[rev.length - 1]);
+        if (!prev) return null;
+        rev.push(prev);
+    }
+    rev.reverse();
+
+    const path = rev.slice(1).map(k => {
+        const [qStr, rStr] = k.split(',');
+        return { q: Number(qStr), r: Number(rStr) };
+    });
+    const totalCost = bestCost.get(goalKey)!;
+    return { path, totalCost };
+}
+
+export function rangedAttack(state: GameState, attackerId: string, targetQ: number, targetR: number): GameState {
+    const attacker = state.units[attackerId];
+    if (!attacker) return state;
+    const def = UNIT_DEFS[attacker.type];
+    if (!def?.isRanged) return state;
+    if (attacker.actionsDone || attacker.hasAttacked) return state;
+    if (def.range <= 0) return state;
+
+    const d = hexDist(attacker.q, attacker.r, targetQ, targetR);
+    if (d <= 0 || d > def.range) return state;
+
+    const targetUnit = Object.values(state.units).find(u => u.q === targetQ && u.r === targetR);
+    const targetCity = Object.values(state.cities).find(c => c.q === targetQ && c.r === targetR);
+    if (targetUnit && targetUnit.ownerId === attacker.ownerId) return state;
+    if (targetCity && targetCity.ownerId === attacker.ownerId) return state;
+    if (!targetUnit && !targetCity) return state;
+
+    const newUnits = { ...state.units };
+    const newCities = { ...state.cities };
+
+    // Simple ranged damage model (placeholder, but consistent)
+    const base = Math.max(2, Math.floor(attacker.combat * (0.8 + Math.random() * 0.4)));
+
+    if (targetUnit) {
+        const updated = { ...targetUnit, hp: targetUnit.hp - base };
+        if (updated.hp <= 0) delete newUnits[targetUnit.id];
+        else newUnits[targetUnit.id] = updated;
+    } else if (targetCity) {
+        const updated = { ...targetCity, hp: Math.max(0, targetCity.hp - Math.floor(base * 0.7)) };
+        newCities[targetCity.id] = updated;
+    }
+
+    newUnits[attackerId] = { ...attacker, movement: 0, actionsDone: true, hasAttacked: true };
+
+    let next = { ...state, units: newUnits, cities: newCities };
+    next = updateRevealedTiles(next, attacker.ownerId);
+    next = calculatePlayerYields(next, attacker.ownerId);
+    return next;
+}
+
 export function moveUnit(state: GameState, unitId: string, dstQ: number, dstR: number): GameState {
     const unit = state.units[unitId];
     if (!unit || unit.movement <= 0) return state;
+
+    // If destination is far, try pathfinding and move as far as allowed.
+    // This preserves existing behavior for adjacent attacks/captures.
+    const dist = hexDist(unit.q, unit.r, dstQ, dstR);
+    if (dist > 1) {
+        const occ = Object.values(state.units).find(u => u.q === dstQ && u.r === dstR);
+        if (occ && occ.ownerId !== unit.ownerId) return state; // melee can't "move onto" a distant enemy
+        const cityOnDst = Object.values(state.cities).find(c => c.q === dstQ && c.r === dstR);
+        if (cityOnDst && cityOnDst.ownerId !== unit.ownerId) return state; // melee city attack must be adjacent
+        const route = findPathWithinMovement(state, unit, dstQ, dstR);
+        if (!route) return state;
+        // Walk the path (it is already within movement, and avoids other units)
+        const last = route.path[route.path.length - 1];
+        if (!last) return state;
+        let nextState = {
+            ...state,
+            units: {
+                ...state.units,
+                [unitId]: { ...unit, q: last.q, r: last.r, s: -last.q - last.r, movement: Math.max(0, unit.movement - route.totalCost) }
+            }
+        };
+        nextState = updateRevealedTiles(nextState, unit.ownerId);
+        nextState = calculatePlayerYields(nextState, unit.ownerId);
+        return nextState;
+    }
 
     const occupied = Object.values(state.units).find(u => u.q === dstQ && u.r === dstR && u.id !== unitId);
     if (occupied) {
@@ -448,10 +697,9 @@ export function moveUnit(state: GameState, unitId: string, dstQ: number, dstR: n
     const tile = state.tiles[`${dstQ},${dstR}`];
     if (!tile || ['OCEAN', 'MOUNTAIN'].includes(tile.terrain)) return state;
 
-    const dist = Math.max(Math.abs(dstQ - unit.q), Math.abs(dstR - unit.r), Math.abs(-(dstQ - unit.q) - (dstR - unit.r)));
     let nextState = {
         ...state,
-        units: { ...state.units, [unitId]: { ...unit, q: dstQ, r: dstR, s: -dstQ - dstR, movement: Math.max(0, unit.movement - dist) } },
+        units: { ...state.units, [unitId]: { ...unit, q: dstQ, r: dstR, s: -dstQ - dstR, movement: Math.max(0, unit.movement - moveCost(tile)) } },
     };
 
     // Capture City if combat unit enters unhosted enemy city or defeated city
@@ -502,9 +750,10 @@ export function foundCity(state: GameState, unitId: string, customId?: string): 
         return state;
     }
 
-    const civ = CIVS[unit.ownerId % CIVS.length];
+    const civKey = state.players[unit.ownerId]?.civKey;
+    const civ = civKey ? civKey : 'Rome';
     const playerCityCount = Object.values(state.cities).filter(c => c.ownerId === unit.ownerId).length;
-    const possibleNames = CITY_NAMES[civ.name] || ['New City'];
+    const possibleNames = CITY_NAMES[civ] || ['New City'];
     let cityName = possibleNames[playerCityCount % possibleNames.length];
 
     // Ensure uniqueness if possible
@@ -576,8 +825,7 @@ export function improveTile(state: GameState, unitId: string, improvementType: s
         }
     };
 
-    calculatePlayerYields(nextState, unit.ownerId);
-    return nextState;
+    return calculatePlayerYields(nextState, unit.ownerId);
 }
 
 export function autoExplore(state: GameState, unitId: string): GameState {
